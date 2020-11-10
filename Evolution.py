@@ -563,13 +563,16 @@ class Star:
 
 
 class Full_Evolution(Star):
+    """
     
-    def __init__(self, initial_mass, initial_period):
+    """
+    
+    def __init__(self, initial_mass, initial_period, P_crit, B_crit):
         # OPEN PARAMETERS 
         #------------------------------ 
-        self.B_crit = 10**3
-        P_crit = 8.5
-        self.omega_crit = 2*np.pi/(P_crit*24*60*60)
+        self.B_crit = B_crit
+        self.P_crit = P_crit
+        self.omega_crit = 2*np.pi/(self.P_crit*24*60*60)
         self.a = 1.5
         self.t_lock = 5*10**6
 
@@ -589,7 +592,7 @@ class Full_Evolution(Star):
         # initial angular mometun IN GCM^2/SEC
         self.J0 = 2/5*self.mass0*self.radius0**2*self.omega0 
         # initial B-field strength
-        self.B0 = self.__evol_B_field(self.omega0, self.omega_crit, self.B_crit, self.a) # intial magnetic field 
+        self.B0 = self.__evol_B_field(self.omega0) # intial magnetic field 
 
         
     def R_dot(self, plot = False):
@@ -633,7 +636,7 @@ class Full_Evolution(Star):
             der = spline.derivative()
             
         else:
-            if M_value[1] < M_star:
+            if M_value[1] < self.mass_rat:
                 M1, M2 = M_value[1], M_unique[M_value[0]+1]
             else:
                 M1, M2 = M_unique[M_value[0]-1], M_value[1]
@@ -668,9 +671,9 @@ class Full_Evolution(Star):
             
         if plot:
             if t1:
-                return min(t), max(t), t, radius, M1, M2, M_star, t1, r1, t2, r2
+                return min(t), max(t), t, radius, M1, M2, self.mass_rat, t1, r1, t2, r2
             else:
-                return min(t), max(t), t, radius, False, False, M_star, False, False, False, False,
+                return min(t), max(t), t, radius, False, False, self.mass_rat, False, False, False, False,
 
         else:
             return min(t), max(t), radius[0], der, spline    
@@ -697,22 +700,18 @@ class Full_Evolution(Star):
             plt.savefig(filepath, dpi = 200)    
             
             
-    def __evol_B_field(self, omega, omega_crit, B_crit, a):
+    def __evol_B_field(self, omega):
     
-        if omega >= omega_crit:
-            return B_crit
+        if omega >= self.omega_crit:
+            return self.B_crit
         
         else:
-            return B_crit*(omega/omega_crit)**a   
+            return self.B_crit*(omega/self.omega_crit)**self.a   
         
     def evolve(self):
         """
         Evolved the star of given mass and period according to Baraffe
         evolutionary tracks (radius is determined from the tracks).
-
-        Returns
-        -------
-        None.
 
         """
         t_lock = 5*10**6
@@ -754,11 +753,11 @@ class Full_Evolution(Star):
         i = 0
         # interate until the final age given in the tracks
         while t < 10**self.t_final:
-            
+            print('----------')
             # initialize a Star class with the given parameters
             star = Star(mass, radius, period, B)
             i+=1
-            print('age', t/10**6, 'Myr')
+            # print('age', t/10**6, 'Myr')
             
             # CALCULATE TIME STEP
             # find Helmholtz-Kelvin timescale 
@@ -785,10 +784,12 @@ class Full_Evolution(Star):
                 
             else:
                 J = J + J_dot*dt*60*60*24*365
-                omega = J/(2/5*mass*radius**2)                  # new omega
+                print('Jtotal: ', J)
+                print('Jdot: ', J_dot*dt*60*60*24*365)
+                omega = J/(2/5*mass*radius**2)               # new omega
                 period = 2*np.pi/(omega*24*60*60)            # new time period
             
-            B = self.__evol_B_field(omega, self.omega_crit, self.B_crit, self.a)
+            B = self.__evol_B_field(omega)
                 
             M_array.append(mass/M_sun)
             R_array.append(radius/R_sun)
@@ -798,11 +799,14 @@ class Full_Evolution(Star):
             L.append(float(star.l))
             Kappa.append(float(star.kappa))
             sm.append(float(star.last_fieldline))
+            # print('Last line: ', star.last_fieldline)
+            # print('age: ', t/10**6, 'Myr')
+            # print('R: ', radius/R_sun)
+            # print('period: ', period)
             
+        print('----------')  
         print('TIME TAKEN', time.time() - start, 'sec')
         print('TOTAL STEPS', i)
-        
-        # plot l/kappa
         
         # CSV FILE WITH DATA
         data = {'M/Ms' : M_array,
@@ -818,13 +822,15 @@ class Full_Evolution(Star):
         
         df = pd.DataFrame(data)
         df.to_csv('evolution_data/evolutionM{}_P{}.csv'.format(self.mass_rat, self.period0), index = False)
+        self.evolution_data = df
     
     def plot_Mdot_Jdot(self):
         
         # PLOTS OF EVOLUTION
-        df = pd.read_csv('evolution_data/evolutionM{}_P{}.csv'.format(self.mass_rat, self.period0))
+        df = self.evolution_data
         
         fig, ax = plt.subplots(2, 2, figsize = [8,6])
+        
         # PERIOD
         ax[0,0].set_title('Period evolution')
         ax[0,0].loglog(df['t (yrs)'], df['Period'], '.-', color = 'tab:red')
@@ -855,36 +861,52 @@ class Full_Evolution(Star):
         ax[1,0].loglog(df['t (yrs)'], df['B0'] , '.-', color = 'tab:red')
         ax[1,0].set_ylabel('$B_0$, Gauss')
         ax[1,0].set_xlabel('Age, yrs')
-        
         plt.tight_layout()
         plt.savefig('evolution_data/plots/M{}'.format(self.mass_rat) + '/evolution_P{}_days.png'.format(self.period0), dpi = 150)
 
         
-    def field_evolution(self):
+    def plot_field_evolution(self):
         
-        ###------------------------------------------
-        ### DOESNT WORK STILL
-        ###------------------------------------------
+        lim = 10
         
-        M_star = np.round(self.mass0/M_sun, decimals = 6)
-        
-        df = pd.read_csv('evolution_data/evolutionM{}_P{}.csv'.format(self.mass_rat, self.period0))
+        df = self.evolution_data
         
         fig, ax2d = plt.subplots(3, 3, squeeze=False, figsize = (8,8))
         ax = ax2d.flatten()
         
         step = len(df)//9
-        rows = np.arange(3,len(df)+3, step)
+        if len(df)%9 == 0:
+            rows = np.arange(0,len(df), step)
+        else:
+            rows = np.arange(3,len(df)+3, step)
         
         for i in range(9):
-            
-            plot_field(df['M/Ms'][rows[i]]*M_sun, df['R/Rs'][rows[i]]*R_sun, \
-              df['B0'][rows[i]], df['Period'][rows[i]], \
-              df['Last open fieldline, Sm'][rows[i]], ax[i])
+            S = Star(M = df['M/Ms'][rows[i]]*M_sun, R = df['R/Rs'][rows[i]]*R_sun, \
+                     P = df['Period'][rows[i]], B = df['B0'][rows[i]])
+            print(S.last_fieldline)
+            S.plot_field(ax[i], lim)
             
             ax[i].set_title('t = {}Myr'.format(np.round(df['t (yrs)'][rows[i]]/10**6, decimals = 2)))
             
-        fig.suptitle('{}'.format(M_star) + r'$M_{\odot}$,' + r'  Init. period = {} day(s)'.format(P))
+        fig.suptitle('{}'.format(self.mass0/M_sun) + r'$M_{\odot}$,' + \
+                     r'  Init. period = {} day(s)'.format(self.period0))
+        fig.tight_layout()
+        plt.savefig('evolution_data/plots/M{}'.format(self.mass_rat) + \
+                    '/field_evolution_P{}_days.png'.format(self.period0), \
+                        dpi = 150)
+
+    def get_period_at(self, age):
+        """
+        Perform a spline interpolation of age vs period data, and hence 
+        estimate the value of period at a given age.
+        """
+        
+        df = self.evolution_data
+        
+        # perform a spline interpolation in of age vs period data
+        spline = CubicSpline(df['t (yrs)'], df['Period'])
+        
+        return spline(age)
         
         
             
