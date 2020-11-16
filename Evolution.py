@@ -663,7 +663,7 @@ class Full_Evolution(Star):
             radius = []
             for i in range(len(t)):
                 lin = interp1d([M1,M2], [float(spline1(t[i])), float(spline2(t[i]))], kind = 'linear')
-                radius.append(float(lin(M_star)))
+                radius.append(float(lin(self.mass_rat)))
               
             # SPLINE INTERPOLATION OF THE ACQUIRED DATA POINTS AND FINDING DERIVATIVES
             spline = CubicSpline(t, radius)
@@ -689,7 +689,7 @@ class Full_Evolution(Star):
         if t1:
             plt.plot(t1, r1, '-', label = r'$M = {}$'.format(M1) + r'$M_{\odot}$')
             plt.plot(t2, r2, '-', label = r'$M = {}$'.format(M2) + r'$M_{\odot}$')
-        plt.plot(t, radius, '-', label = r'$M = {}$'.format(M_star) + r'$M_{\odot}$ (interpolated)')  
+        plt.plot(t, radius, 'x-', label = r'$M = {}$'.format(M_star) + r'$M_{\odot}$ (interpolated)')  
         plt.title(r'Evolutionary track (BHAC15)')  
         plt.xlabel(r'$log(t)$, yr')
         plt.ylabel(r'$R/R_{\odot}$')
@@ -697,7 +697,9 @@ class Full_Evolution(Star):
         plt.tight_layout()
             
         if filepath:   
-            plt.savefig(filepath, dpi = 200)    
+            plt.savefig(filepath, dpi = 200)  
+        
+        return t, radius
             
             
     def __evol_B_field(self, omega):
@@ -707,6 +709,15 @@ class Full_Evolution(Star):
         
         else:
             return self.B_crit*(omega/self.omega_crit)**self.a   
+        
+    def radius_at_age(self, age):
+        """
+        Determine the radius at some age from the Barraffe tracks.
+        """
+        _, _, _, _, spline  = self.R_dot()
+        rad = spline(np.log10(age))*R_sun
+        
+        return rad
         
     def evolve(self):
         """
@@ -734,6 +745,7 @@ class Full_Evolution(Star):
         M_dot_array = []
         J_dot_array = []
         B_array = []
+        j = []
         sm = []
         L = []
         Kappa = []
@@ -751,6 +763,7 @@ class Full_Evolution(Star):
         
         # number of steps
         i = 0
+        first = True
         # interate until the final age given in the tracks
         while t < 10**self.t_final:
             print('----------')
@@ -781,14 +794,24 @@ class Full_Evolution(Star):
             
             if t <= t_lock:   
                 J = 2/5*mass*radius**2*omega
+                # omega and period stay constant, while radius decreases 
+                # so J decreases
                 
+
             else:
+                if first:
+                    # first non-locked iteration:
+                    # we take angular 
+                    # momentum as the one at t_lock
+                    rad_tlock = self.radius_at_age(self.t_lock)
+                    J = 2/5*mass*rad_tlock**2*omega
+                    first = False
+
                 J = J + J_dot*dt*60*60*24*365
-                print('Jtotal: ', J)
-                print('Jdot: ', J_dot*dt*60*60*24*365)
                 omega = J/(2/5*mass*radius**2)               # new omega
                 period = 2*np.pi/(omega*24*60*60)            # new time period
-            
+            # print('Jtotal: ', J)
+            # print('Jdot: ', J_dot*dt*60*60*24*365)
             B = self.__evol_B_field(omega)
                 
             M_array.append(mass/M_sun)
@@ -799,12 +822,13 @@ class Full_Evolution(Star):
             L.append(float(star.l))
             Kappa.append(float(star.kappa))
             sm.append(float(star.last_fieldline))
+            j.append(J)
             # print('Last line: ', star.last_fieldline)
             # print('age: ', t/10**6, 'Myr')
             # print('R: ', radius/R_sun)
             # print('period: ', period)
             
-        print('----------')  
+        # print('----------')  
         print('TIME TAKEN', time.time() - start, 'sec')
         print('TOTAL STEPS', i)
         
@@ -815,18 +839,22 @@ class Full_Evolution(Star):
                 't (yrs)' : t_array,
                 'Mdot (g/s)' : M_dot_array,
                 'Jdot (gcm^2/s^2)' : J_dot_array,
+                'J' : j,
                 'B0' : B_array,
                 'Last open fieldline, Sm' : sm,
                 'L' : L,
-                'Kappa' : Kappa}
+                'Kappa' : Kappa
+                }
         
         df = pd.DataFrame(data)
-        df.to_csv('evolution_data/evolutionM{}_P{}.csv'.format(self.mass_rat, self.period0), index = False)
+        df.to_csv('evolution_data/evolutionM{}_Pin{}_Pcrit{}_Bcrit{}.csv'.format(self.mass_rat,\
+                                self.period0, self.P_crit, self.B_crit), index = False)
         self.evolution_data = df
     
     def plot_Mdot_Jdot(self):
         
         # PLOTS OF EVOLUTION
+
         df = self.evolution_data
         
         fig, ax = plt.subplots(2, 2, figsize = [8,6])
@@ -867,7 +895,7 @@ class Full_Evolution(Star):
         
     def plot_field_evolution(self):
         
-        lim = 10
+        lim = 20
         
         df = self.evolution_data
         
@@ -895,24 +923,38 @@ class Full_Evolution(Star):
                     '/field_evolution_P{}_days.png'.format(self.period0), \
                         dpi = 150)
 
-    def get_period_at(self, age):
+    def get_period_at(self, age, only_contraction = False):
         """
         Perform a spline interpolation of age vs period data, and hence 
         estimate the value of period at a given age.
         """
+        #df = pd.read_csv('evolution_data/evolutionM0.3_Pin10_Pcrit8.5_Bcrit1000.csv')
         
         df = self.evolution_data
         
-        # perform a spline interpolation in of age vs period data
-        spline = CubicSpline(df['t (yrs)'], df['Period'])
-        
-        return spline(age)
-        
-        
+        # if we ignore the angular momentum outflow, just contraction
+        if only_contraction:
             
-S = Star(M = M_sun*0.3, R = R_sun, P = 1, B = 1000)  
-ev = Full_Evolution(M_sun, 10)
+            rad_tlock = self.radius_at_age(self.t_lock)
+            # print('rad_lock',rad_tlock)
+            omega_tlock = 2*np.pi/(self.period0*24*60*60)
+            # print('omegtlock', omega_tlock)
+            
+            # ang.mom at locking
+            J_tlock = 2/5*self.mass0*rad_tlock**2*omega_tlock
+            # print('J lock', J_tlock)
+            # print('J0', self.J0)
+            
+            rad = self.radius_at_age(age)
+            # assuming ang.mom. and mass constant, omega at age we want is
+            omega = J_tlock/(2/5*self.mass0*rad**2)
+            period = 2*np.pi/(omega*24*60*60)   
 
+            return period
+        
+        else:
+            spline = CubicSpline(df['t (yrs)'], df['Period'])
+            return spline(age)
 
 
 
