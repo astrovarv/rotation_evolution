@@ -203,10 +203,9 @@ class Star:
         
         # intial guess parameter
         root1 = brentq(self.__last_fieldline_brent, 1e-9, 1.0)
-        print(root1)
+
         # find the last open fieldline
         x0 = mp.findroot(eq_to_solve, (root1-0.01*root1, root1+0.01*root1), solver = Illinois)
-        print(x0)
         return x0
     
     def __poly_xc(self, S):
