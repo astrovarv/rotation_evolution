@@ -28,7 +28,7 @@ T = 1e6 # Assume constant coronal temperature of 10^6 K
 m_H = 1.673e-24 # Hydrogen mass
 R_J = 7.14e9 # Jupyter radius
 cs = np.sqrt(3*k*T/m_H) # Sound speed
-number_density = 1e10 # number density at the coronal base
+number_density = 1e11 # number density at the coronal base
 
 # SET ARBITRARY PRECISION
 mp.mp.dps = 50 
@@ -590,6 +590,32 @@ class Star:
         return ax 
 
 
+def evol_B_field(omega):
+    omega_crit = 2*np.pi/(8.5*24*60*60)
+    B_crit = 1000
+    if omega >= omega_crit:
+        return B_crit
+    else:
+        return B_crit*(omega/omega_crit)**1.5 
+
+
+
+B = evol_B_field(2*np.pi/(10*24*60*60))
+
+S = Star(0.3*M_sun, 0.8*R_sun, 10, B)
+
+
+
+#############################################################################
+#############################################################################
+###                         EVOLUTION CLASS BELOW                         ###
+#############################################################################
+#############################################################################
+
+
+
+
+
 class Full_Evolution(Star):
     """
 
@@ -620,7 +646,7 @@ class Full_Evolution(Star):
         # initial angular mometun IN GCM^2/SEC
         self.J0 = 2/5*self.mass0*self.radius0**2*self.omega0 
         # initial B-field strength
-        self.B0 = self.B0evol_B_field(self.omega0) # intial magnetic field 
+        self.B0 = self.evol_B_field(self.omega0) # intial magnetic field 
 
         
     def R_dot(self, plot = False):
@@ -769,36 +795,39 @@ class Full_Evolution(Star):
         M_array = []
         R_array = []
         P_array = []
+        P_array2 = []
         t_array = []
         M_dot_array = []
         J_dot_array = []
+        J_dot_array2 = []
         B_array = []
         j = []
         sm = []
         L = []
         Kappa = []
         
-        # initial parameters to commence evolution
+        
+        # star from the locking age
+        t = self.t_lock
         mass = self.mass0
-        radius = self.radius0
+        radius = self.radius_at_age(t)
         period = self.period0
         omega = self.omega0
         B = self.B0
-        J = self.J0
-        t = self.t0
+        J = 2/5*mass*radius**2*omega
+        J2 = 2/5*mass*radius**2*omega
         
         S_num = 100
         
         # number of steps
         i = 0
-        first = True
+
         # interate until the final age given in the tracks
-        while t < 10**self.t_final:
-            print('----------')
+        while t < 3.5*10**9:
             # initialize a Star class with the given parameters
             star = Star(mass, radius, period, B)
             i+=1
-            print('age', t/10**6, 'Myr')
+
             
             # CALCULATE TIME STEP
             # find Helmholtz-Kelvin timescale 
@@ -811,50 +840,59 @@ class Full_Evolution(Star):
             
             # CALCULATE MASS AND ANG. MOMENTUM OUTFLOW
             M_dot, J_dot = star.M_dot_J_dot(S_num)
-            M_dot_array.append(M_dot)
-            J_dot_array.append(J_dot)
+            # also calculate ang mom lost in Reiners paper
+            J_dot2 = star.Jdot_radial()
+
+            # check if the angular momentum loss in the next step is larger 
+            # than total angular momentum of the star
+            # if so, reduce the step by 1 order of magnitude
+            if abs(J_dot*dt*60*60*24*365) > J:
+                dt = dt/10
+            
+            # if still larger then stop the evolution
+            if abs(J_dot*dt*60*60*24*365) > J:
+                break   
+            
             
             # UPDATE PARAMETERS
             # UPDATE TIME (in years)
             t = t + dt
-            mass = mass + M_dot*dt*60*60*24*365
+            mass = mass - M_dot*dt*60*60*24*365
             radius = self.R_func(np.log10(t))*R_sun
-            
-            if t <= t_lock:   
-                J = 2/5*mass*radius**2*omega
-                # omega and period stay constant, while radius decreases 
-                # so J decreases
-                
-
-            else:
-                if first:
-                    # first non-locked iteration:
-                    # we take angular 
-                    # momentum as the one at t_lock
-                    rad_tlock = self.radius_at_age(self.t_lock)
-                    J = 2/5*mass*rad_tlock**2*omega
-                    first = False
-
-                J = J + J_dot*dt*60*60*24*365
-                omega = J/(2/5*mass*radius**2)               # new omega
-                period = 2*np.pi/(omega*24*60*60)            # new time period
+            J = J - J_dot*dt*60*60*24*365
+            omega = J/(2/5*mass*radius**2)
+            period = 2*np.pi/(omega*24*60*60)           
             B = self.evol_B_field(omega)
                 
+            J2 = J2 - J_dot2*dt*60*60*24*365
+            omega2 = J2/(2/5*mass*radius**2)
+            period2 = 2*np.pi/(omega2*24*60*60)           
+            B2 = self.evol_B_field(omega2)
+            
+            print('----------') 
+            print('age', t/10**6, 'Myr')
+            print('Jtotal: ', J)
+            print('Jdot: ', -J_dot*dt*60*60*24*365)
+            print('Jdot (Reiners): ', -J_dot2*dt*60*60*24*365)
+            print('Last line: ', star.last_fieldline)
+            print('age: ', t/10**6, 'Myr')
+            print('R: ', radius/R_sun)
+            print('period: ', period)
+            print('B: ', B)
+            
+            M_dot_array.append(-M_dot)
+            J_dot_array.append(-J_dot)
+            J_dot_array2.append(-J_dot2)
             M_array.append(mass/M_sun)
             R_array.append(radius/R_sun)
             P_array.append(period)
+            P_array2.append(period2)
             t_array.append(t)
             B_array.append(B)
             L.append(float(star.l))
             Kappa.append(float(star.kappa))
             sm.append(float(star.last_fieldline))
             j.append(J)
-            print('Jtotal: ', J)
-            print('Jdot: ', J_dot*dt*60*60*24*365)
-            print('Last line: ', star.last_fieldline)
-            print('age: ', t/10**6, 'Myr')
-            print('R: ', radius/R_sun)
-            print('period: ', period)
             
         # print('----------')  
         print('TIME TAKEN', time.time() - start, 'sec')
@@ -864,9 +902,11 @@ class Full_Evolution(Star):
         data = {'M/Ms' : M_array,
                 'R/Rs' : R_array,
                 'Period' : P_array,
+                'Period2' : P_array2,
                 't (yrs)' : t_array,
                 'Mdot (g/s)' : M_dot_array,
                 'Jdot (gcm^2/s^2)' : J_dot_array,
+                'Jdot2 (gcm^2/s^2)' : J_dot_array2,
                 'J' : j,
                 'B0' : B_array,
                 'Last open fieldline, Sm' : sm,
@@ -879,18 +919,20 @@ class Full_Evolution(Star):
                                 self.period0, self.P_crit, self.B_crit), index = False)
         self.evolution_data = df
     
+    
+    
     def plot_Mdot_Jdot(self):
         
         # PLOTS OF EVOLUTION
 
         df = self.evolution_data
         
-        fig, ax = plt.subplots(2, 2, figsize = [8,6])
-        
+        fig, ax = plt.subplots(2, 2, figsize = [8,5])
+        fig.suptitle(r'n = 1e{}'.format(int(np.log10(number_density))))
         # PERIOD
         ax[0,0].set_title('Period evolution')
         ax[0,0].loglog(df['t (yrs)'], df['Period'], '.-', color = 'tab:red')
-        ax[0,0].axvline(x = self.t_lock, color = 'k')
+        ax[0,0].loglog(df['t (yrs)'], df['Period2'], '.-', color = 'tab:green')
         ax[0,0].set_xlabel('Age, yrs')
         ax[0,0].set_ylabel('$P$, days')
         
@@ -898,7 +940,6 @@ class Full_Evolution(Star):
         ax[0,1].set_title('Mass outflow evolution')
         Mdot = np.array([-i for i in df['Mdot (g/s)']])
         Mdot = Mdot/M_sun*365*24*60*60
-        ax[0,1].axvline(x = self.t_lock, color = 'k')
         ax[0,1].loglog(df['t (yrs)'], Mdot , '.-', color = 'tab:red')
         ax[0,1].set_ylabel(r'$\dot{M}$, $M_{\odot}$/yr')
         ax[0,1].set_xlabel('Age, yrs')
@@ -906,24 +947,27 @@ class Full_Evolution(Star):
         # ANG MOMENTUM OUTFLOW
         ax[1,1].set_title('Ang. mometum outflow evolution')
         Jdot = np.array([-i for i in df['Jdot (gcm^2/s^2)']])
-        ax[1,1].axvline(x = self.t_lock, color = 'k')
-        ax[1,1].loglog(df['t (yrs)'], Jdot , '.-', color = 'tab:red')
+        Jdot2 = np.array([-i for i in df['Jdot2 (gcm^2/s^2)']])
+        ax[1,1].loglog(df['t (yrs)'], Jdot , '.-', color = 'tab:red', label = 'new model')
+        ax[1,1].loglog(df['t (yrs)'], Jdot2 , '.-', color = 'tab:green', label = 'old model')
+        ax[1,1].legend()
         ax[1,1].set_ylabel(r'$\dot{J}$, gcm$^2$/s$^2$')
         ax[1,1].set_xlabel('Age, yrs')
         
         # B FIELD
         ax[1,0].set_title('Mag. field strength evolution')
-        ax[1,0].axvline(x = self.t_lock, color = 'k')
         ax[1,0].loglog(df['t (yrs)'], df['B0'] , '.-', color = 'tab:red')
         ax[1,0].set_ylabel('$B_0$, Gauss')
         ax[1,0].set_xlabel('Age, yrs')
         plt.tight_layout()
-        plt.savefig('evolution_data/plots/M{}'.format(self.mass_rat) + '/evolution_P{}_days.png'.format(self.period0), dpi = 150)
+        plt.savefig('test_plots/M{}'.format(self.mass_rat) + \
+                    'evolution_P{}_days'.format(self.period0) + \
+                        'n{}.png'.format(int(np.log10(number_density))), dpi = 150)
 
         
     def plot_field_evolution(self):
         
-        lim = 20
+        lim = 10
         
         df = self.evolution_data
         
@@ -983,19 +1027,5 @@ class Full_Evolution(Star):
         else:
             spline = CubicSpline(df['t (yrs)'], df['Period'])
             return spline(age)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
