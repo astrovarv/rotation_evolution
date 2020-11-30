@@ -16,10 +16,10 @@ from scipy.optimize import brentq
 from scipy.interpolate import interp1d
 from scipy.interpolate import CubicSpline
 from scipy.integrate import quad
-from mpmath.calculus.optimization import Illinois
+from mpmath.calculus.optimization import Secant
 import os
 
-# PHYSICAL CONSTANTS USED
+# PHYSICAL CONSTANTS USED CGS UNITS
 M_sun = 1.99e33 # Solar mass
 R_sun = 6.96e10 # Solar radius
 G = 6.673e-8 # Gravitational constant
@@ -27,36 +27,51 @@ k = 1.38e-16 # Boltzmann constant
 T = 1e6 # Assume constant coronal temperature of 10^6 K
 m_H = 1.673e-24 # Hydrogen mass
 R_J = 7.14e9 # Jupyter radius
-cs = np.sqrt(3*k*T/m_H) # Sound speed
-number_density = 1e11 # number density at the coronal base
+mu = 1.0 # mean molecular weight
+cs = np.sqrt(3*k*T/(mu*m_H)) # Sound speed
+number_density = 1e10 # number density at the coronal base
 
 # SET ARBITRARY PRECISION
 mp.mp.dps = 50 
 
 
-def find_nearest(array, value):
-    """
-    Finds the closest value in an array to the given one.
-    
-    Returns:
-    -------
-    idx : INDEX OF THE CLOSEST VALUE
-    
-    array[idx] : THE CLOSEST VALUE
-        
-    """
-    array = np.asarray(array)
-    idx = (np.abs(array - value)).argmin()
-    
-    return idx, array[idx]
-
 
 class Star:
     """
+    The class is initialised with mass, radius, rotation period and magnetic
+    field strength. The last open fieldline is calculated, along with the 
+    ratios (kappa, l and zeta) as per Mestel (1968). 
+    
+    This class is later initilised at each timestep of an evolution of a star. 
+    
+    It allows to calculate the values of coronal base velocity, critical Alfven 
+    radius, critical Alfven density and other parameters to determine the mass 
+    and angular momentum outflow from a given star,  in total and along any 
+    given fieldline S = sin^2(theta).
     
     """
-    
     def __init__(self, M = None, R = None, P = None, B = None):
+        """
+        Parameters
+        ----------
+        M : MASS OF A STAR (in cgs units - grams)
+        
+        R : RADIUS OF A STAR (in cgs units - cm)
+        
+        P : ROTATION PERIOD OF A STAR (in days)
+        
+        B : MAGNETIC FIELD STRENGTH AT POLES (in cgs units - Gauss)
+        
+        
+        The ratios: kappa (rot.energy/grav.energy), 
+                    l (grav.energy/therm.energy) and 
+                    zeta (mag.energy/therm.energy) 
+                        are calculated. 
+                        
+        Omega in cgs units (s^-1) is calculated.
+        The critical (last open) fieldline is calculated.
+
+        """
         
         self.__mass = M
         self.__radius = R
@@ -68,10 +83,14 @@ class Star:
         
         # Ratio of rotational to gravitational energy:
         self.kappa = mp.mpf((self.__omega**2)*(self.__radius**3)/(G*self.__mass))
+        
         # Ratio of gravitational to thermal energy:
         self.l = mp.mpf(G*self.__mass/(self.__radius*cs**2))
+        
         # Ratio of magnetic to thermal energy:
-        self.zeta = mp.mpf(self.__B**2/(8*np.pi*number_density*m_H*cs**2))
+        self.zeta = mp.mpf(self.__B**2/(8*np.pi*number_density*mu*m_H*cs**2))
+        
+        # Last open fieldline
         self.last_fieldline = self.last_fieldline()
         
     def set_mass(self, M):
@@ -97,6 +116,10 @@ class Star:
         print(self.__omega)
         
     def get_Jtotal(self):
+        """
+        Total angular momentum of a star assuming solid body rotation
+        (J = moment of inertia * omega).
+        """
         print('Angular Mom. = ', 2/5*self.__mass*self.__radius**2*self.__omega, \
               'gcm^2/s')
         
@@ -145,7 +168,7 @@ class Star:
                                  + 0.5*self.kappa*self.l*S*mp.power(x,3))
         return A
 
-    def __base_velocity(self, S):
+    def base_velocity(self, S):
         """
         Calculates poloidal wind velocity at the coronal base at given 
         S = sin^2(theta) using the Lambert W function.
@@ -175,40 +198,49 @@ class Star:
         return x, Us, v_p
     
     
-    def __last_fieldline_brent(self, x):
+    def last_fieldline_brent(self, x):
         """
         The last open fieldline equation put in the formed used by the brentq 
         solver. Needed to find initial "guess" parameter.
         Owen, Adams 2014 Eq.(39)
         """
-
-        C = mp.log(self.zeta)
-        
-        return self.l*(x-1) + 0.5*self.kappa*self.l*(mp.power(x,-2) - x) - C - 6*mp.log(x)
     
+        return self.l*(x-1) + 0.5*(self.kappa)*(self.l)*(x**-2 - x) - \
+            mp.log(self.zeta) - 6*mp.log(x)
     
+ 
     def last_fieldline(self):
         """
         Finds the last open fieldline q_m = sin^2(theta_m). 
         Owen, Adams 2014 Eq. (39)
+        
         """
-        
-        def eq_to_solve(x):
-            """
-            The equation for q_m put in the form that is used to find roots.
-            """
-            C = mp.log(self.zeta)
+        # check if there are solutions in the region
+        x = np.linspace(1e-9,1, 1000)
+        array = [float(self.last_fieldline_brent(i)) for i in x]
+        # if no solutions then all lines are open
+        if min(array) > 0: 
             
-            return self.l*(x-1) + 0.5*self.kappa*self.l*(mp.power(x,-2) - x) - C - 6*mp.log(x)
+            return 1
         
-        # intial guess parameter
-        root1 = brentq(self.__last_fieldline_brent, 1e-9, 1.0)
-
-        # find the last open fieldline
-        x0 = mp.findroot(eq_to_solve, (root1-0.01*root1, root1+0.01*root1), solver = Illinois)
-        return x0
+        else:
+            def eq_to_solve(x):
+                """
+                The equation for q_m put in the form that is used to find roots.
+                """
+                C = mp.log(self.zeta)
+                
+                return self.l*(x-1) + 0.5*self.kappa*self.l*(mp.power(x,-2) - x) - C - 6*mp.log(x)
+            
     
-    def __poly_xc(self, S):
+            root1 = brentq(self.last_fieldline_brent, 1e-9, 1.0)
+            # find the last open fieldline
+            x0 = mp.findroot(eq_to_solve, (root1-0.01*root1, root1+0.01*root1), solver = Secant)
+            
+            return x0
+
+    
+    def poly_xc(self, S):
         """
         This uses the simple roots finder to find all roots of the polynomial 
         equation for the critical radius x_c. It then chooses the smallest real positive root. Used as
@@ -216,7 +248,7 @@ class Star:
         Overleaf 2020 Eq. () 
         Mestel 1968 Eq. (63) + Eq. (64)
         """
-        Us = self.__base_velocity(S)[1]
+        Us = self.base_velocity(S)[1]
         
         k9 = 0.5*mp.power(Us,2)*self.kappa*self.l*S
         k6 = mp.power(Us,2)*mp.log(mp.sqrt(1-0.75*S)*self.zeta/Us) + \
@@ -245,7 +277,7 @@ class Star:
         Mestel 1968 Eq. (63) + Eq. (64)
         """
         
-        Us = self.__base_velocity(S)[1]
+        Us = self.base_velocity(S)[1]
 
         def xc_equation(x):
             """
@@ -263,10 +295,10 @@ class Star:
             return k9*mp.power(x,9) + k6*mp.power(x,6) + k5*mp.power(x,5) + k1*x + k0
         
         # initial guess parameter
-        root1 = self.__poly_xc(S)
+        root1 = self.poly_xc(S)
         
         # find x_c
-        x_c = mp.findroot(xc_equation, (root1-0.01*root1, root1+0.01*root1), Illinois)
+        x_c = mp.findroot(xc_equation, (root1-0.01*root1, root1+0.01*root1), Secant)
         
         # calculate the critical velocity from the values of x_c
         # Mestel Eq. (64)
@@ -388,10 +420,11 @@ class Star:
         
         Returns:
         --------
-        P : 9TH ORDER NUMPY POLYNOMIAL OBJECT FITTED TO LN(X_C) VS SQRT(S)
-        
+        P : 9TH ORDER NUMPY POLYNOMIAL OBJECT FITTED TO SQRT(S) vs X_C
         
         P_dash : NUMPY POLYNOMIAL OBJECT GIVING DERIVATIVE P'
+        
+        Q : 9TH ORDER NUMPY POLYNOMIAL OBJECT FITTED TO SQRT(S) vs RHO_C*V_C
         
         """
         
@@ -423,7 +456,7 @@ class Star:
         self._P_dash = P_dash
         
         if fits:
-            return sqrt_S, xc, rho_c_v_A, P, P_dash, res
+            return sqrt_S, xc, rho_c_v_A, P, P_dash, Q, res, res2
         else:
             return P, rho_c_v_A, P_dash
         
@@ -441,29 +474,30 @@ class Star:
         else:
             return C*self.__omega*(self.__radius**16/self.__mass**2)**(1/3)
         
+        
     # NEED TO CHANGE THIS FUNCTION
     def plot_poly_fits(self, S_num, filepath = None):
         
-        sqrt_S, log_xc, log_rho_c_v_A, P, Q, P_dash, res, res2 = self.poly_fits(S_num, fits = True)
+        sqrt_S, xc, rho_c_v_A, P, P_dash, Q, res, res2 = self.poly_fits(S_num, fits = True)
         
         x = np.linspace(min(sqrt_S), max(sqrt_S), 100)
         deg = 9
         
-        fig, ax = plt.subplots(2,1, sharex = True)
+        fig, ax = plt.subplots(2,1, sharex = True, dpi = 100)
         ax[0].set_title(r'$log(\kappa) = {}$,'.format(np.round(np.log10(float(self.kappa)), decimals = 2)) + \
             r' $L = {}$,'.format(np.round(float(self.l), decimals = 2)) + \
         r' $\zeta = {}$'.format(np.round(float(self.zeta), decimals = 2)) + '\n Critical radius, '+ r'$x_c$')
-        ax[0].plot(sqrt_S, log_xc, '.', color = 'tab:blue')
-        ax[0].set_ylabel(r'$\ln(x_c)$')
+        ax[0].plot(sqrt_S, xc, '.', color = 'tab:blue')
+        ax[0].set_ylabel(r'$x_c$')
         # plt.title('Kappa {}'.format(K) +', L {}'.format(np.round(L, decimals = 2)))
         ax[0].plot(x, P(x), color = 'tab:red', label = 'Poly. degree {}'.format(deg) + \
                    ' RMS Error {}'.format(np.round(np.sqrt(res[0]/100), decimals = 5)))
         ax[0].legend()
         
         ax[1].set_title(r'Crit. density $\times$ Alfven velocity, $\rho_cv_{c,A}$')
-        ax[1].plot(sqrt_S, log_rho_c_v_A, '.', color = 'tab:blue')
+        ax[1].plot(sqrt_S, rho_c_v_A, '.', color = 'tab:blue')
         ax[1].set_xlabel(r'$\sin\theta$')
-        ax[1].set_ylabel(r'$\ln(\rho_cv_{c,A})$')
+        ax[1].set_ylabel(r'$\rho_cv_{c,A}$')
         # plt.title('Kappa {}'.format(K) +', L {}'.format(np.round(L, decimals = 2)))
         ax[1].plot(x, Q(x), color = 'tab:red', label = 'Poly. degree {}'.format(deg) + \
                    ' RMS Error {}'.format(np.round(np.sqrt(res2[0]/100), decimals = 5)))
@@ -471,10 +505,6 @@ class Star:
         
         plt.tight_layout()
         
-        plt.figure()
-        plt.plot(sqrt_S, np.exp(log_rho_c_v_A), 'x-')
-        plt.figure()
-        plt.plot(sqrt_S, np.exp(log_xc), 'x-')
         if filepath:
             plt.savefig(filepath, dpi = 200)
 
@@ -482,10 +512,10 @@ class Star:
     def delta_M(self, x):
         
         # x is sin(theta)
-        
         return 4*np.pi*self.__radius**2*self._Q(x)*x*(self._P(x)**2 + \
                                 0.5*x*self._P_dash(x))/(np.sqrt(1-0.75*x**2))
         
+            
     def delta_J(self, x):
         
          # x is sin(theta)
@@ -495,22 +525,17 @@ class Star:
                         np.sqrt(1-0.75*x**2)
             
     
-    def plot_delta_M(self):
+    def plot_delta_M(self, num):
         
-        _ = self.poly_fits(100) # to get P, P_dash and rhovca
+        _ = self.poly_fits(num) # to get P, P_dash and rhovca
         
-        x = np.linspace(1e-9, np.sqrt(float(self.last_fieldline)), 100)
-        
-        plt.figure(1)
-        plt.plot(x, self.delta_M(x), 'x-')
-        plt.ylabel(r'$\Delta \dot{M}$')
-        plt.xlabel(r'$\sin\theta$')
-        
-        plt.figure(2)
-        plt.plot(x, self.delta_J(x), 'x-')
-        plt.ylabel(r'$\Delta \dot{J}$')        
-        plt.xlabel(r'$\sin\theta$')    
-    
+        x = np.linspace(1e-5, np.sqrt(float(self.last_fieldline)), 50)
+        plt.figure(1, dpi = 100)
+        plt.title('Mass outflow')
+        plt.plot(x, self.delta_M(x)/M_sun*365*24*60*60, '.-', color = 'tab:red')
+        plt.ylabel(r'$\Delta \dot{M}, M_{\odot}$yr$^{-1}$')
+        plt.xlabel(r'Fieldline, $\sin\theta$')
+
     def M_dot_J_dot(self, S_num):
         
         # calculate the polynomial fits for this star
@@ -554,7 +579,7 @@ class Star:
         for i in range(len(S)):
             # if the fieldline is open
             if S[i] < self.last_fieldline:
-                print('Last fieldline, S = ', self.last_fieldline)
+                # print('Last fieldline, S = ', self.last_fieldline)
                 # calculate xc
                 xc, Uc = self.__crit_velocity(S[i])
                 
@@ -588,22 +613,25 @@ class Star:
         y_alf = np.array(y_alf)
         
         return ax 
+    
+def find_nearest(array, value):
+    """
+    Finds the closest value in an array to the given one.
+    
+    Returns:
+    -------
+    idx : INDEX OF THE CLOSEST VALUE
+    
+    array[idx] : THE CLOSEST VALUE
+        
+    """
+    array = np.asarray(array)
+    idx = (np.abs(array - value)).argmin()
+    
+    return idx, array[idx]
 
 
-def evol_B_field(omega):
-    omega_crit = 2*np.pi/(8.5*24*60*60)
-    B_crit = 1000
-    if omega >= omega_crit:
-        return B_crit
-    else:
-        return B_crit*(omega/omega_crit)**1.5 
-
-
-
-B = evol_B_field(2*np.pi/(10*24*60*60))
-
-S = Star(0.3*M_sun, 0.8*R_sun, 10, B)
-
+S = Star(M_sun, R_sun, 24, 1)
 
 
 #############################################################################
@@ -613,10 +641,7 @@ S = Star(0.3*M_sun, 0.8*R_sun, 10, B)
 #############################################################################
 
 
-
-
-
-class Full_Evolution(Star):
+class Full_Evolution():
     """
 
     """
@@ -833,7 +858,13 @@ class Full_Evolution(Star):
             # find Helmholtz-Kelvin timescale 
             t_KH = t*radius/R_sun*np.log(10)/abs(self.R_dot_func(np.log10(t)))
             # time step in years
-            dt = t_KH/10 
+            dt = t_KH/10
+            
+            """
+            
+            t_J ang momentum timescale loss J/J_dot
+            if dt > t_J/10 set dt = t_J/10
+            """
             
             if dt > t:
                 dt = t
@@ -848,7 +879,6 @@ class Full_Evolution(Star):
             # if so, reduce the step by 1 order of magnitude
             if abs(J_dot*dt*60*60*24*365) > J:
                 dt = dt/10
-            
             # if still larger then stop the evolution
             if abs(J_dot*dt*60*60*24*365) > J:
                 break   
@@ -869,16 +899,16 @@ class Full_Evolution(Star):
             period2 = 2*np.pi/(omega2*24*60*60)           
             B2 = self.evol_B_field(omega2)
             
-            print('----------') 
-            print('age', t/10**6, 'Myr')
-            print('Jtotal: ', J)
-            print('Jdot: ', -J_dot*dt*60*60*24*365)
-            print('Jdot (Reiners): ', -J_dot2*dt*60*60*24*365)
-            print('Last line: ', star.last_fieldline)
-            print('age: ', t/10**6, 'Myr')
-            print('R: ', radius/R_sun)
-            print('period: ', period)
-            print('B: ', B)
+            # print('----------') 
+            # print('age', t/10**6, 'Myr')
+            # print('Jtotal: ', J)
+            # print('Jdot: ', -J_dot*dt*60*60*24*365)
+            # print('Jdot (Reiners): ', -J_dot2*dt*60*60*24*365)
+            # print('Last line: ', star.last_fieldline)
+            # print('age: ', t/10**6, 'Myr')
+            # print('R: ', radius/R_sun)
+            # print('period: ', period)
+            # print('B: ', B)
             
             M_dot_array.append(-M_dot)
             J_dot_array.append(-J_dot)
@@ -1027,5 +1057,8 @@ class Full_Evolution(Star):
         else:
             spline = CubicSpline(df['t (yrs)'], df['Period'])
             return spline(age)
+
+
+
 
 
