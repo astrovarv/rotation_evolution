@@ -24,15 +24,15 @@ M_sun = 1.99e33 # Solar mass
 R_sun = 6.96e10 # Solar radius
 G = 6.673e-8 # Gravitational constant
 k = 1.38e-16 # Boltzmann constant
-T = 1e6 # Assume constant coronal temperature of 10^6 K
+T = 3e6 # Assume constant coronal temperature of 10^6 K
 m_H = 1.673e-24 # Hydrogen mass
 R_J = 7.14e9 # Jupyter radius
 mu = 1.0 # mean molecular weight
 cs = np.sqrt(3*k*T/(mu*m_H)) # Sound speed
-number_density = 1e10 # number density at the coronal base
+number_density = 3e7 # number density at the coronal base
 
 # SET ARBITRARY PRECISION
-mp.mp.dps = 50 
+mp.mp.dps = 30 
 
 
 
@@ -133,7 +133,7 @@ class Star:
         return mp.sqrt(mp.power(self.__B,2))/(mp.power((r/self.__radius),6)*(1 - 0.75*S))
 
     
-    def __x_a(self, S):
+    def x_a(self, S):
         """
         Calculates sonic radius x_a for latitude S = sin^2(theta).
         Mestel 1968 Eq. (60)
@@ -152,6 +152,8 @@ class Star:
                 
         x_a = mp.mpf(min(physical_roots))
         
+        if x_a < 1:
+            x_a = 1
         return x_a
 
     def __const_A(self, S):
@@ -161,7 +163,7 @@ class Star:
         Mestel 1968 Eq. (61)
         """
         # Calculate the sonic radius first
-        x = self.__x_a(S)
+        x = self.x_a(S)
         
         A = 0.5*(1+mp.log(2)) - (self.l/x + 3*mp.log(x) \
                                  - 0.5*mp.log(1-0.75*x*S) \
@@ -183,13 +185,13 @@ class Star:
         v_p : WIND VELOCITY AT THE CORONAL BASE (CGS UNITS).
         """
         
-        x = self.__x_a(S)
+        x = self.x_a(S)
         B = self.l*(1+self.kappa*S/2) - 0.5*mp.log(1-0.75*S)
         
-        if x < 1:
+        if x == 1:
             Us = 1/mp.sqrt(2)
             v_p = cs
-            
+
         else:
             Us_squared = mp.re(-0.5*lambertw(-2*mp.exp(-2*(self.__const_A(S) + B)), 0))
             Us = mp.sqrt(Us_squared)
@@ -206,7 +208,7 @@ class Star:
         """
     
         return self.l*(x-1) + 0.5*(self.kappa)*(self.l)*(x**-2 - x) - \
-            mp.log(self.zeta) - 6*mp.log(x)
+            mp.log(self.__B**2/(8*np.pi*(number_density*cs*cs*mu*m_H)**2)) - 6*mp.log(x)
     
  
     def last_fieldline(self):
@@ -218,9 +220,9 @@ class Star:
         # check if there are solutions in the region
         x = np.linspace(1e-9,1, 1000)
         array = [float(self.last_fieldline_brent(i)) for i in x]
+        
         # if no solutions then all lines are open
         if min(array) > 0: 
-            
             return 1
         
         else:
@@ -228,19 +230,19 @@ class Star:
                 """
                 The equation for q_m put in the form that is used to find roots.
                 """
-                C = mp.log(self.zeta)
+                C = mp.log(self.__B**2/(8*np.pi*(number_density*cs*cs*mu*m_H)**2))
                 
                 return self.l*(x-1) + 0.5*self.kappa*self.l*(mp.power(x,-2) - x) - C - 6*mp.log(x)
-            
     
             root1 = brentq(self.last_fieldline_brent, 1e-9, 1.0)
+            
             # find the last open fieldline
             x0 = mp.findroot(eq_to_solve, (root1-0.01*root1, root1+0.01*root1), solver = Secant)
             
             return x0
 
     
-    def poly_xc(self, S):
+    def poly_xc(self, S, plot = False, filepath = False):
         """
         This uses the simple roots finder to find all roots of the polynomial 
         equation for the critical radius x_c. It then chooses the smallest real positive root. Used as
@@ -265,10 +267,27 @@ class Star:
         for i in roots:
             if np.imag(i) == 0 and i > 0:
                 physical_roots.append(np.real(i))
-                
+              
         x_c = min(physical_roots)
         
+        if plot:
+            plt.figure()
+            x = np.linspace(0.5, 50, 100000)
+            plt.plot(x, k9*x**9 + k6*x**6 + k5*x**5 + k1*x + k0)
+            
+            plt.xlabel(r'$x_c$')
+            plt.ylabel(r'$P(x_c)$')
+            plt.ylim([-1,1])
+            plt.axhline(y = 0, color = 'black')
+            plt.plot([x_c], [0], 'x', color = 'red', label = r'Root, $x_c$ = ' + str(x_c))
+            plt.legend()
+            plt.grid()
+            plt.title(r'$S = \sin^2\theta$ = ' + str(S) + r'. $S_m$ = ' + str(np.round(float(self.last_fieldline), decimals = 2)))
+            if filepath:
+                plt.savefig(filepath, dpi = 200)
         return x_c
+
+
     
     def __crit_velocity(self, S):
         """
@@ -276,7 +295,7 @@ class Star:
         Overleaf 2020 Eq. () 
         Mestel 1968 Eq. (63) + Eq. (64)
         """
-        
+
         Us = self.base_velocity(S)[1]
 
         def xc_equation(x):
@@ -296,13 +315,18 @@ class Star:
         
         # initial guess parameter
         root1 = self.poly_xc(S)
-        
         # find x_c
         x_c = mp.findroot(xc_equation, (root1-0.01*root1, root1+0.01*root1), Secant)
+        U_c = mp.sqrt(1 - 0.75*x_c*S)*mp.sqrt(1 - 0.75*S)*self.zeta/(Us*mp.power(x_c,3))
         
+        if x_c < 1:
+            x_c = 1
+            U_c = Us
         # calculate the critical velocity from the values of x_c
         # Mestel Eq. (64)
-        U_c = mp.sqrt(1 - 0.75*x_c*S)*mp.sqrt(1 - 0.75*S)*self.zeta/(Us*mp.power(x_c,3))
+        if mp.re(U_c) == 0:
+            U_c = Us
+            x_c = mp.mpf(1)
         
         return x_c, U_c
     
@@ -378,14 +402,15 @@ class Star:
         rho_c = []
         
         for i in range(len(S)):
-            v = U_c[i]*cs*np.sqrt(2)
-            B = np.sqrt(self.__B**2/(x_c[i]**6)*(1-0.75*S[i]))
-            
-            rho = B**2/(4*np.pi*v**2)
-            v_A.append(v)
-            B_c.append(B)
-            rho_c.append(rho)
-            
+            if np.real(U_c[i]) != 0:
+                v = U_c[i]*cs*np.sqrt(2)
+                B = np.sqrt(self.__B**2/(x_c[i]**6)*(1-0.75*S[i]))
+                
+                rho = B**2/(4*np.pi*v**2)
+                v_A.append(v)
+                B_c.append(B)
+                rho_c.append(rho)
+                
         return S, v_A, B_c, rho_c
     
     
@@ -460,9 +485,10 @@ class Star:
         else:
             return P, rho_c_v_A, P_dash
         
+        
     def Jdot_radial(self):
         """
-        Reihners and Mohanty (2012) model
+        Reiners and Mohanty (2012) model
         """
         C = 2.66*10**3
         
@@ -480,6 +506,7 @@ class Star:
         
         sqrt_S, xc, rho_c_v_A, P, P_dash, Q, res, res2 = self.poly_fits(S_num, fits = True)
         
+        print('Average rhov:', np.mean(rho_c_v_A))
         x = np.linspace(min(sqrt_S), max(sqrt_S), 100)
         deg = 9
         
@@ -560,12 +587,12 @@ class Star:
         
         S = np.linspace(0.01,1,30)**2
         
-    #    fig, ax = plt.subplots(figsize = (6,6))
+        #fig, ax = plt.subplots(figsize = (6,6))
         
         xc_init, Uc = self.__crit_velocity(S[0])
         # lim = 1.2*self.__fieldline_equation(float(xc_init)*np.sqrt(S[0]), 1, S[0])
         
-        ax.set_aspect('equal')
+        #ax.set_aspect('equal')
     
         ax.set_ylim(-1,lim)
         ax.set_xlim(-lim,lim)
@@ -614,6 +641,7 @@ class Star:
         
         return ax 
     
+    
 def find_nearest(array, value):
     """
     Finds the closest value in an array to the given one.
@@ -630,8 +658,11 @@ def find_nearest(array, value):
     
     return idx, array[idx]
 
+# 
+# S = Star(M_sun, R_sun, 24, 1)
+# fig, ax = plt.subplots(dpi = 100, figsize = (5,5))
 
-S = Star(M_sun, R_sun, 24, 1)
+
 
 
 #############################################################################
@@ -899,16 +930,16 @@ class Full_Evolution():
             period2 = 2*np.pi/(omega2*24*60*60)           
             B2 = self.evol_B_field(omega2)
             
-            # print('----------') 
-            # print('age', t/10**6, 'Myr')
-            # print('Jtotal: ', J)
-            # print('Jdot: ', -J_dot*dt*60*60*24*365)
-            # print('Jdot (Reiners): ', -J_dot2*dt*60*60*24*365)
-            # print('Last line: ', star.last_fieldline)
-            # print('age: ', t/10**6, 'Myr')
-            # print('R: ', radius/R_sun)
-            # print('period: ', period)
-            # print('B: ', B)
+            print('----------') 
+            print('age', t/10**6, 'Myr')
+            print('Jtotal: ', J)
+            print('Jdot: ', -J_dot*dt*60*60*24*365)
+            print('Jdot (Reiners): ', -J_dot2*dt*60*60*24*365)
+            print('Last line: ', star.last_fieldline)
+            print('age: ', t/10**6, 'Myr')
+            print('R: ', radius/R_sun)
+            print('period: ', period)
+            print('B: ', B)
             
             M_dot_array.append(-M_dot)
             J_dot_array.append(-J_dot)
@@ -1058,7 +1089,7 @@ class Full_Evolution():
             spline = CubicSpline(df['t (yrs)'], df['Period'])
             return spline(age)
 
-
+evol = Full_Evolution(M_sun, 10, 8.5, 1000)
 
 
 
