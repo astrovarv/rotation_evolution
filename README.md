@@ -6,4 +6,4 @@ Using Mestel's derivations for the angular momentum transport by stellar wind (1
 
 [Evolution.py](https://github.com/astrovarv/rotation_evolution/blob/main/Evolution.py) contains the main code, [Demo.py](https://github.com/astrovarv/rotation_evolution/blob/main/Demo.ipynb) will show some visualisations.
 
-(This is a work in progress and is being updated constantly)
+(This is a work in progress and is being updated)
