@@ -11,6 +11,7 @@ import mpmath as mp
 import time
 import pandas as pd
 from mpmath import lambertw
+import matplotlib
 import matplotlib.pyplot as plt
 from scipy.optimize import brentq
 from scipy.interpolate import interp1d
@@ -18,6 +19,16 @@ from scipy.interpolate import CubicSpline
 from scipy.integrate import quad
 from mpmath.calculus.optimization import Secant
 import os
+
+matplotlib.rcParams.update({# Use mathtext, not LaTeX
+                            'text.usetex': False,
+                            # Use the Computer modern font
+                            'font.family': 'serif',
+                            'font.serif': 'cmr10',
+                            'mathtext.fontset': 'cm',
+                            # Use ASCII minus
+                            'axes.unicode_minus': False,
+                            })
 
 # PHYSICAL CONSTANTS USED CGS UNITS
 M_sun = 1.99e33 # Solar mass
@@ -27,7 +38,7 @@ k = 1.38e-16 # Boltzmann constant
 T = 3e6 # Assume constant coronal temperature of 10^6 K
 m_H = 1.673e-24 # Hydrogen mass
 R_J = 7.14e9 # Jupyter radius
-mu = 1.0 # mean molecular weight
+mu = 0.6 # mean molecular weight
 cs = np.sqrt(3*k*T/(mu*m_H)) # Sound speed
 number_density = 3e7 # number density at the coronal base
 
@@ -50,7 +61,8 @@ class Star:
     given fieldline S = sin^2(theta).
     
     """
-    def __init__(self, M = None, R = None, P = None, B = None):
+    def __init__(self, M = None, R = None, P = None, B = None, 
+                 set_l = None, set_kappa = None, set_zeta = None):
         """
         Parameters
         ----------
@@ -62,6 +74,11 @@ class Star:
         
         B : MAGNETIC FIELD STRENGTH AT POLES (in cgs units - Gauss)
         
+        set_kappa : SET KAPPA IRRESPECTIVE OF STAR PROPERTIES
+            
+        set_l : SET L IRRESPECTIVE OF STAR PROPERTIES
+            
+        set_zeta : SET ZETA IRRESPECTIVE OF STAR PROPERTIES
         
         The ratios: kappa (rot.energy/grav.energy), 
                     l (grav.energy/therm.energy) and 
@@ -81,18 +98,37 @@ class Star:
         else: self.__omega = None
         self.__B = B
         
+        self.param = False        
         # Ratio of rotational to gravitational energy:
-        self.kappa = mp.mpf((self.__omega**2)*(self.__radius**3)/(G*self.__mass))
+        if set_kappa:
+            self.kappa = set_kappa
+            self.param = True
+        else:
+            self.kappa = mp.mpf((self.__omega**2)*(self.__radius**3)/(G*self.__mass))
         
         # Ratio of gravitational to thermal energy:
-        self.l = mp.mpf(G*self.__mass/(self.__radius*cs**2))
+        if set_l:
+            self.l = set_l
+            self.param = True
+        else:
+            self.l = mp.mpf(G*self.__mass/(self.__radius*cs**2))
         
         # Ratio of magnetic to thermal energy:
-        self.zeta = mp.mpf(self.__B**2/(8*np.pi*number_density*mu*m_H*cs**2))
+        if set_zeta:
+            self.zeta = set_zeta
+            self.param = True
+        else:
+            self.zeta = mp.mpf(self.__B**2/(8*np.pi*number_density*mu*m_H*cs**2))
         
         # Last open fieldline
         self.last_fieldline = self.last_fieldline()
         
+        # We have an option of setting the values of l, kappa and zeta, 
+        # irrespective of M, R and etc. This is in order to be able to 
+        # perform overall analysis of this parameter space. 
+        # However, in such case, we cannot calculate correct B-field, density 
+        # and etc. Is self.param = True, then the user will get a warning.
+
     def set_mass(self, M):
         self.__mass = M
     
@@ -208,9 +244,9 @@ class Star:
         """
     
         return self.l*(x-1) + 0.5*(self.kappa)*(self.l)*(x**-2 - x) - \
-            mp.log(self.__B**2/(8*np.pi*(number_density*cs*cs*mu*m_H)**2)) - 6*mp.log(x)
+            mp.log(self.zeta) - 6*mp.log(x)
     
- 
+
     def last_fieldline(self):
         """
         Finds the last open fieldline q_m = sin^2(theta_m). 
@@ -230,14 +266,15 @@ class Star:
                 """
                 The equation for q_m put in the form that is used to find roots.
                 """
-                C = mp.log(self.__B**2/(8*np.pi*(number_density*cs*cs*mu*m_H)**2))
+                C = mp.log(self.zeta)
                 
-                return self.l*(x-1) + 0.5*self.kappa*self.l*(mp.power(x,-2) - x) - C - 6*mp.log(x)
+                return self.l*(x-1) + 0.5*self.kappa*self.l*(x**-2 - x) - C - 6*mp.log(x)
     
             root1 = brentq(self.last_fieldline_brent, 1e-9, 1.0)
             
             # find the last open fieldline
-            x0 = mp.findroot(eq_to_solve, (root1-0.01*root1, root1+0.01*root1), solver = Secant)
+            x0 = mp.findroot(eq_to_solve, (root1-0.01*root1, root1+0.01*root1), \
+                             solver = Secant)
             
             return x0
 
@@ -252,13 +289,13 @@ class Star:
         """
         Us = self.base_velocity(S)[1]
         
-        k9 = 0.5*mp.power(Us,2)*self.kappa*self.l*S
-        k6 = mp.power(Us,2)*mp.log(mp.sqrt(1-0.75*S)*self.zeta/Us) + \
-               mp.power(Us,2)*self.__const_A(S)
-        k5 = mp.power(Us,2)*self.l
-        k1 = 0.75*S*mp.power(self.zeta,2) - \
-                9/16*mp.power(S,2)*mp.power(self.zeta,2)
-        k0 = 0.75*S*mp.power(self.zeta,2) - mp.power(self.zeta,2)
+        k9 = 0.5*Us**2*self.kappa*self.l*S
+        k6 = Us**2*mp.log(mp.sqrt(1-0.75*S)*self.zeta/Us) + \
+               Us**2*self.__const_A(S)
+        k5 = Us**2*self.l
+        k1 = 0.75*S*self.zeta**2 - \
+                9/16*S**2*self.zeta**2
+        k0 = 0.75*S*self.zeta**2 - self.zeta**2
         
         coef = [k9, 0, 0, k6, k5, 0, 0, 0, k1, k0]
         roots = np.roots(coef)
@@ -289,7 +326,7 @@ class Star:
 
 
     
-    def __crit_velocity(self, S):
+    def crit_velocity(self, S):
         """
         Finds the critical radius x_c and the critical (Alfven) velocity U_c.
         Overleaf 2020 Eq. () 
@@ -322,11 +359,12 @@ class Star:
         if x_c < 1:
             x_c = 1
             U_c = Us
+            
         # calculate the critical velocity from the values of x_c
         # Mestel Eq. (64)
-        if mp.re(U_c) == 0:
-            U_c = Us
-            x_c = mp.mpf(1)
+        # if mp.re(U_c) == 0:
+        #     U_c = Us
+        #     x_c = mp.mpf(1)
         
         return x_c, U_c
     
@@ -345,13 +383,16 @@ class Star:
         S = []
         for i in range(len(S1)):
             S.append(mp.power(S1[i],2))
-        
+            
+        problem = False
         for i in range(len(S)):
-            xc, Uc = self.__crit_velocity(S[i])
+            xc, Uc = self.crit_velocity(S[i])
+            if mp.re(Uc) == 0:
+                problem = True
             x_c.append(xc)
             U_c.append(Uc)
-        
-        return S, x_c, U_c
+            
+        return S, x_c, U_c, problem
     
     def plot_Alfven(self, S_num, filepath = None):
         
@@ -361,15 +402,15 @@ class Star:
         Adding filepath will save the plots.
 
         """
-        S, x_c, U_c = self.calculate_xc(S_num)
+        S, x_c, U_c, pr = self.calculate_xc(S_num)
         
         x_c = [float(mp.re(i)) for i in x_c]
         U_c = [float(mp.re(i)) for i in U_c]
         S = [float(mp.re(i)) for i in S]
         
-        fig, ax = plt.subplots(2,1, sharex = True)
+        fig, ax = plt.subplots(2,1, sharex = True, dpi = 100)
         
-        ax[0].semilogy(S, x_c, '.-', label = '$x_c$ solutions')
+        ax[0].plot(S, x_c, '.-', label = '$x_c$ solutions')
         ax[0].axvline(x = self.last_fieldline, color = 'k', label = r'$S_m$ (last open field line)')
         ax[0].set_ylabel(r'$x_c$')
         ax[0].legend()
@@ -377,7 +418,7 @@ class Star:
             r' $L = {}$,'.format(np.round(float(self.l), decimals = 2)) + \
         r' $\zeta = {}$'.format(np.round(float(self.zeta), decimals = 2)) + '\n Alfven Surface')
         
-        ax[1].semilogy(S, U_c, '.-', label = '$U_c$ solutions', color = 'tab:red')
+        ax[1].plot(S, U_c, '.-', label = '$U_c$ solutions', color = 'tab:red')
         ax[1].axvline(self.last_fieldline, color = 'k', \
                     label = r'$S_m$ (last open field line)')
         ax[1].set_xlabel(r'$S$')
@@ -395,7 +436,11 @@ class Star:
         Calculate the magnetic field and density at Alfven surface for a
         given number of S (latitide values).
         """
-        S, x_c, U_c = self.calculate_xc(S_num)
+        
+        if self.param:
+            print('Cannot perform this. Undefine kappa, l and zeta.')
+            
+        S, x_c, U_c, _ = self.calculate_xc(S_num)
     
         v_A = []
         B_c = []
@@ -416,6 +461,9 @@ class Star:
     
     def plot_Alfven_field(self, S_num, filepath = None):
         
+        if self.param:
+            print('Cannot perform this. Undefine kappa, l and zeta.')
+            
         S, v_A, B_c, rho_c = self.crit_field(S_num)
         
         fig, ax1 = plt.subplots()
@@ -452,9 +500,10 @@ class Star:
         Q : 9TH ORDER NUMPY POLYNOMIAL OBJECT FITTED TO SQRT(S) vs RHO_C*V_C
         
         """
-        
+        if self.param:
+            print('Cannot perform this. Undefine kappa, l and zeta.')
         # calculate x_c and U_c
-        S, xc, Uc = self.calculate_xc(S_num)
+        S, xc, Uc, _ = self.calculate_xc(S_num)
         
         # calculate magnetic field, Alfven velocity and density
         _, v_A, B_c, rho_c = self.crit_field(S_num)
@@ -583,13 +632,13 @@ class Star:
     def __radial_fieldline(self, x, m):
         return x*m
  
-    def plot_field(self, ax, lim):
+    def plot_field(self, ax, lim, legend = True):
         
         S = np.linspace(0.01,1,30)**2
         
         #fig, ax = plt.subplots(figsize = (6,6))
         
-        xc_init, Uc = self.__crit_velocity(S[0])
+        xc_init, Uc = self.crit_velocity(S[0])
         # lim = 1.2*self.__fieldline_equation(float(xc_init)*np.sqrt(S[0]), 1, S[0])
         
         #ax.set_aspect('equal')
@@ -608,7 +657,7 @@ class Star:
             if S[i] < self.last_fieldline:
                 # print('Last fieldline, S = ', self.last_fieldline)
                 # calculate xc
-                xc, Uc = self.__crit_velocity(S[i])
+                xc, Uc = self.crit_velocity(S[i])
                 
                 # cartesian coordinates of the Alfven point
                 last_x = float(xc)*np.sqrt(S[i])
@@ -622,20 +671,27 @@ class Star:
                 x_list2 = np.array([i for i in x if i > last_x])
         
                 # plot the full dipolar fieldlines
-                ax.plot(x, self.__fieldline_equation(x, 1, S[i]), color = 'navy', alpha = 0.1)
-                ax.plot(x, -self.__fieldline_equation(x, 1, S[i]), color = 'navy', alpha = 0.1)
+                ax.plot(x, self.__fieldline_equation(x, 1, S[i]), color = 'navy', \
+                        alpha = 0.1, label = "Dipolar field" if i ==0 else "")
+                ax.plot(x, -self.__fieldline_equation(x, 1, S[i]), color = 'navy', \
+                        alpha = 0.1)
             
                 # plot dipolar fieldlines up to the Alfven point
-                ax.plot(x_list, self.__fieldline_equation(x_list, 1, S[i]), color = 'navy', linewidth = 1)
-                ax.plot(x_list2, self.__radial_fieldline(x_list2, last_y/last_x), color = 'navy', linewidth = 1)
-                ax.plot(-x_list2, self.__radial_fieldline(-x_list2, -last_y/last_x), color = 'navy', linewidth = 1)
-                ax.plot(last_x, last_y, 'x', color = 'black', markersize = 3)
+                ax.plot(x_list, self.__fieldline_equation(x_list, 1, S[i]), \
+                        color = 'navy', linewidth = 1, label = 'Actual field' if i == 0 else "")
+                ax.plot(x_list2, self.__radial_fieldline(x_list2, last_y/last_x), \
+                        color = 'navy', linewidth = 1)
+                ax.plot(-x_list2, self.__radial_fieldline(-x_list2, -last_y/last_x), \
+                        color = 'navy', linewidth = 1)
+                ax.plot(last_x, last_y, 'x', color = 'black', markersize = 3, \
+                        label = 'Alfven points' if i == 0 else '')
                 ax.plot(-last_x,last_y, 'x', color = 'black', markersize = 3)
             
             else:
                 ax.plot(x, self.__fieldline_equation(x, 1, S[i]), color = 'navy', linewidth = 1)
                 ax.plot(x, -self.__fieldline_equation(x, 1, S[i]), color = 'navy', linewidth = 1)
-        
+        if legend:
+          ax.legend(loc = 4, markerscale = 2)
         x_alf = np.array(x_alf)
         y_alf = np.array(y_alf)
         
@@ -658,11 +714,21 @@ def find_nearest(array, value):
     
     return idx, array[idx]
 
-# 
-# S = Star(M_sun, R_sun, 24, 1)
-# fig, ax = plt.subplots(dpi = 100, figsize = (5,5))
+  #%%  
 
 
+# fig, ax = plt.subplots(dpi = 100)
+# ax.set_aspect = 'equal'
+# S.plot_field(ax, 3)
+
+# plt.figure()
+# x = np.linspace(1e-9,1,1000)
+# ans = [float(S.last_fieldline_brent(i)) for i in x]
+# plt.plot(x,ans)
+# plt.ylim((-1,1))
+# plt.grid()
+# plt.axhline(y=0, color = 'black')
+# plt.xlabel(r'$S_m$')
 
 
 #############################################################################
